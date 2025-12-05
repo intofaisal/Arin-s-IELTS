@@ -1,0 +1,7 @@
+{
+  "name": "Arin's IELTS",
+  "description": "A comprehensive IELTS mock test platform featuring AI-powered grading for Writing, an interactive Speaking examiner, and PDF-to-Test conversion for Reading modules.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
