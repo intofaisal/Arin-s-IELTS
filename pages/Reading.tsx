@@ -1,7 +1,9 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { StorageService } from '../services/storage';
-import { QuestionBank, TestResult, TestModule, ReadingModule } from '../types';
-import { CheckCircle, AlertCircle, Search, Edit3, X, Eye, ChevronDown } from 'lucide-react';
+import { AuthService } from '../services/auth';
+import { TestResult, TestModule, ReadingModule, PracticeTest } from '../types';
+import { AlertCircle, Edit3, X, Eye, ChevronDown, Loader2 } from 'lucide-react';
 
 const calculateBandScore = (rawScore: number): number => {
   if (rawScore >= 39) return 9.0;
@@ -15,72 +17,52 @@ const calculateBandScore = (rawScore: number): number => {
   if (rawScore >= 15) return 5.0;
   if (rawScore >= 13) return 4.5;
   if (rawScore >= 10) return 4.0;
-  return 3.5; // Simplification
+  return 3.5;
 };
 
 const ReadingPage = () => {
-  const [banks, setBanks] = useState<QuestionBank[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [allTests, setAllTests] = useState<{bankId: string, bankName: string, test: PracticeTest}[]>([]);
+  const [selectedTestUniqueId, setSelectedTestUniqueId] = useState<string>('');
   
-  // Selection State
-  const [selectedBankId, setSelectedBankId] = useState<string>('');
-  const [selectedTestId, setSelectedTestId] = useState<string>('');
-  
-  // Content State
   const [readingModule, setReadingModule] = useState<ReadingModule | null>(null);
   
-  // Test Execution State
   const [currentPassageIdx, setCurrentPassageIdx] = useState(0);
   const [answers, setAnswers] = useState<Record<number, string>>({}); 
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [notes, setNotes] = useState('');
   const [showNotes, setShowNotes] = useState(false);
-  
-  // Analysis State
   const [highlightedEvidence, setHighlightedEvidence] = useState<string | null>(null);
-
-  // Refs for highlighting
   const passageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const loadedBanks = StorageService.getQuestionBanks().filter(b => b.tests && b.tests.some(t => t.reading));
-    setBanks(loadedBanks);
-    if (loadedBanks.length > 0) {
-      const firstBank = loadedBanks[0];
-      setSelectedBankId(firstBank.id);
-      
-      const firstTestWithReading = firstBank.tests.find(t => t.reading);
-      if (firstTestWithReading) {
-        setSelectedTestId(firstTestWithReading.id);
-        setReadingModule(firstTestWithReading.reading || null);
-      }
-    }
+    loadTests();
   }, []);
 
-  const handleBankChange = (bankId: string) => {
-    setSelectedBankId(bankId);
-    const bank = banks.find(b => b.id === bankId);
-    if (bank) {
-        const firstTest = bank.tests.find(t => t.reading);
-        if (firstTest) {
-            handleTestChange(bank, firstTest.id);
-        } else {
-            setReadingModule(null);
-            setSelectedTestId('');
-        }
+  const loadTests = async () => {
+    setLoading(true);
+    const tests = await StorageService.getAllTestsByModule(TestModule.READING);
+    setAllTests(tests);
+    if (tests.length > 0) {
+        const first = tests[0];
+        handleTestSelection(`${first.bankId}|${first.test.id}`, tests);
     }
+    setLoading(false);
   };
 
-  const handleTestChange = (bank: QuestionBank, testId: string) => {
-      setSelectedTestId(testId);
-      const test = bank.tests.find(t => t.id === testId);
+  const handleTestSelection = (uniqueId: string, testList = allTests) => {
+      setSelectedTestUniqueId(uniqueId);
+      const [bankId, testId] = uniqueId.split('|');
+      const found = testList.find(t => t.bankId === bankId && t.test.id === testId);
       
-      // Reset everything
-      setReadingModule(test?.reading || null);
-      setAnswers({});
-      setIsSubmitted(false);
-      setCurrentPassageIdx(0);
-      setNotes('');
-      setHighlightedEvidence(null);
+      if (found && found.test.reading) {
+          setReadingModule(found.test.reading);
+          setAnswers({});
+          setIsSubmitted(false);
+          setCurrentPassageIdx(0);
+          setNotes('');
+          setHighlightedEvidence(null);
+      }
   };
 
   const handleAnswer = (qId: number, val: string) => {
@@ -88,16 +70,16 @@ const ReadingPage = () => {
     setAnswers(prev => ({ ...prev, [qId]: val }));
   };
 
-  const handleSubmit = () => {
-    if (!readingModule) return;
+  const handleSubmit = async () => {
+    const user = AuthService.getCurrentUser();
+    if (!readingModule || !readingModule.passages || !user) return;
     setIsSubmitted(true);
     
-    // Calculate Score
     let rawScore = 0;
     let totalQuestions = 0;
     
     readingModule.passages.forEach(p => {
-      p.questions.forEach(q => {
+      (p.questions || []).forEach(q => {
         totalQuestions++;
         const userAns = answers[q.id]?.trim().toLowerCase();
         const correctAns = q.correctAnswer?.trim().toLowerCase();
@@ -111,12 +93,13 @@ const ReadingPage = () => {
 
     const testResult: TestResult = {
       id: crypto.randomUUID(),
+      userId: user.id,
       date: new Date().toISOString(),
       module: TestModule.READING,
       score: band,
       details: { rawScore, totalQuestions, answers }
     };
-    StorageService.saveResult(testResult);
+    await StorageService.saveResult(testResult);
   };
 
   const highlightSelection = () => {
@@ -124,11 +107,10 @@ const ReadingPage = () => {
     if (!selection || selection.rangeCount === 0) return;
     if (passageRef.current && passageRef.current.contains(selection.anchorNode)) {
        try {
+         // @ts-ignore
          document.execCommand('hiliteColor', false, '#fef08a');
          selection.removeAllRanges();
-       } catch (e) {
-         console.error("Highlight failed", e);
-       }
+       } catch (e) { console.error("Highlight failed", e); }
     }
   };
 
@@ -137,55 +119,47 @@ const ReadingPage = () => {
     setHighlightedEvidence(evidence);
   };
 
-  if (banks.length === 0) {
+  if (loading) {
+      return <div className="h-full flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600"/></div>;
+  }
+
+  if (allTests.length === 0) {
     return (
       <div className="text-center p-12">
         <div className="bg-blue-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
           <AlertCircle className="w-8 h-8 text-blue-600" />
         </div>
-        <h3 className="text-xl font-semibold mb-2">No Reading Tests Found</h3>
-        <p className="text-slate-500 mb-6">Upload a PDF to generate reading tests.</p>
-        <a href="#/upload" className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700">Go to Upload</a>
+        <h3 className="text-xl font-semibold mb-2">No Reading Tests Available</h3>
+        <p className="text-slate-500">Please wait for an admin to upload reading tests.</p>
       </div>
     );
   }
 
-  const currentBank = banks.find(b => b.id === selectedBankId);
+  const hasPassages = readingModule && readingModule.passages && readingModule.passages.length === 3;
+  const currentPassage = hasPassages ? readingModule.passages[currentPassageIdx] : null;
 
   return (
     <div className="h-[calc(100vh-100px)] flex flex-col relative">
        {/* Top Bar */}
        <div className="bg-white p-3 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-center shadow-sm shrink-0 z-10 gap-3">
          <div className="flex items-center gap-4 w-full sm:w-auto overflow-x-auto">
-            {/* Bank Selector */}
+            {/* Flattened Test Selector */}
             <div className="relative">
                 <select 
-                  value={selectedBankId} 
-                  onChange={(e) => handleBankChange(e.target.value)}
-                  className="appearance-none bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-lg pl-3 pr-8 py-2 min-w-[150px] font-medium"
+                  value={selectedTestUniqueId} 
+                  onChange={(e) => handleTestSelection(e.target.value)}
+                  className="appearance-none bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-lg pl-3 pr-8 py-2 min-w-[200px] font-medium max-w-xs truncate"
                 >
-                  {banks.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  {allTests.map(t => (
+                      <option key={`${t.bankId}|${t.test.id}`} value={`${t.bankId}|${t.test.id}`}>
+                          {t.test.name}
+                      </option>
+                  ))}
                 </select>
                 <ChevronDown className="absolute right-2 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" />
             </div>
-
-            {/* Test Selector */}
-            {currentBank && (
-                 <div className="relative">
-                    <select 
-                        value={selectedTestId} 
-                        onChange={(e) => handleTestChange(currentBank, e.target.value)}
-                        className="appearance-none bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-lg pl-3 pr-8 py-2 min-w-[100px] font-medium"
-                    >
-                        {currentBank.tests.filter(t => t.reading).map(t => (
-                            <option key={t.id} value={t.id}>{t.name}</option>
-                        ))}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" />
-                 </div>
-            )}
             
-            {readingModule && (
+            {hasPassages && (
                 <div className="flex bg-slate-100 rounded-lg p-1 gap-1">
                     {readingModule.passages.map((_, idx) => (
                         <button
@@ -214,7 +188,11 @@ const ReadingPage = () => {
             </button>
             
             {!isSubmitted ? (
-             <button onClick={handleSubmit} className="bg-indigo-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-indigo-700 text-sm whitespace-nowrap">
+             <button 
+               onClick={handleSubmit} 
+               disabled={!hasPassages}
+               className="bg-indigo-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-indigo-700 text-sm whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+             >
                Submit Test
              </button>
            ) : (
@@ -222,14 +200,13 @@ const ReadingPage = () => {
                 <div className="text-right mr-2">
                     <p className="text-xs text-slate-500 uppercase font-bold">Band Score</p>
                     <p className="text-xl font-bold text-indigo-600">
-                        {readingModule && calculateBandScore(readingModule.passages.flatMap(p => p.questions).reduce((acc, q) => {
+                        {hasPassages && calculateBandScore(readingModule.passages.flatMap(p => p.questions || []).reduce((acc, q) => {
                              return acc + (answers[q.id]?.trim().toLowerCase() === q.correctAnswer?.trim().toLowerCase() ? 1 : 0);
                         }, 0))}
                     </p>
                 </div>
-                {/* Simple reset logic - reselect current test */}
                 <button 
-                    onClick={() => { if(currentBank) handleTestChange(currentBank, selectedTestId); }} 
+                    onClick={() => handleTestSelection(selectedTestUniqueId)}
                     className="text-slate-500 hover:text-indigo-600 underline text-sm"
                 >
                     Retake
@@ -240,17 +217,21 @@ const ReadingPage = () => {
        </div>
 
        {/* Content Area */}
-       {!readingModule ? (
-           <div className="flex-1 flex items-center justify-center text-slate-400">
-               Select a test to begin.
+       {!currentPassage ? (
+           <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-8 text-center">
+               <AlertCircle className="w-12 h-12 mb-4 opacity-50" />
+               <p className="text-lg">
+                   {!readingModule 
+                       ? "Select a test from the menu above to begin." 
+                       : "Test data is incomplete (missing 3 passages)."}
+               </p>
            </div>
        ) : (
            <div className="flex-1 flex overflow-hidden">
-              {/* Left: Passage Content */}
+              {/* Left: Passage */}
               <div className="flex-1 overflow-y-auto p-8 bg-white border-r border-slate-200 relative group selection:bg-yellow-200 selection:text-black">
                  <div className="max-w-3xl mx-auto">
-                     <h2 className="text-2xl font-bold text-slate-900 mb-6">{readingModule.passages[currentPassageIdx].title}</h2>
-                     
+                     <h2 className="text-2xl font-bold text-slate-900 mb-6">{currentPassage.title}</h2>
                      {!isSubmitted && (
                          <div className="sticky top-0 z-20 flex justify-end mb-2 pointer-events-none">
                              <button 
@@ -261,14 +242,13 @@ const ReadingPage = () => {
                             </button>
                          </div>
                      )}
-
                      <div 
                         ref={passageRef}
                         className="prose prose-slate max-w-none prose-p:leading-relaxed text-slate-800"
                         contentEditable={!isSubmitted}
                         suppressContentEditableWarning={true}
                         onKeyDown={(e) => e.preventDefault()}
-                        dangerouslySetInnerHTML={{ __html: readingModule.passages[currentPassageIdx].content }}
+                        dangerouslySetInnerHTML={{ __html: currentPassage.content }}
                      />
                  </div>
               </div>
@@ -276,15 +256,16 @@ const ReadingPage = () => {
               {/* Right: Questions */}
               <div className={`w-[450px] flex-shrink-0 bg-slate-50 overflow-y-auto p-6 border-l border-slate-200 transition-all ${showNotes ? 'mr-80' : ''}`}>
                  {(() => {
-                     const currentPassage = readingModule.passages[currentPassageIdx];
+                     const questions = currentPassage.questions || [];
                      const groupedQuestions = [];
-                     let currentGroup = [];
-                     let currentInstruction = currentPassage.questions[0]?.groupInstruction || "Questions";
+                     let currentGroup: typeof questions = [];
+                     let currentInstruction = questions[0]?.groupInstruction || "Questions";
 
-                     for (const q of currentPassage.questions) {
-                         if (q.groupInstruction && q.groupInstruction !== currentInstruction) {
+                     for (const q of questions) {
+                         const instr = q.groupInstruction || "Questions";
+                         if (instr !== currentInstruction && currentGroup.length > 0) {
                              groupedQuestions.push({ instruction: currentInstruction, questions: currentGroup });
-                             currentInstruction = q.groupInstruction;
+                             currentInstruction = instr;
                              currentGroup = [];
                          }
                          currentGroup.push(q);
@@ -294,11 +275,8 @@ const ReadingPage = () => {
                      return groupedQuestions.map((group, gIdx) => (
                         <div key={gIdx} className="mb-8">
                              <div className="bg-white border border-slate-200 p-4 rounded-lg mb-4 shadow-sm sticky top-0 z-10">
-                                 <h4 className="font-bold text-slate-700 text-sm uppercase tracking-wide">
-                                     {group.instruction || "Questions"}
-                                 </h4>
+                                 <h4 className="font-bold text-slate-700 text-sm uppercase tracking-wide">{group.instruction}</h4>
                              </div>
-                             
                              <div className="space-y-6">
                                  {group.questions.map((q) => {
                                      const isCorrect = answers[q.id]?.trim().toLowerCase() === q.correctAnswer?.trim().toLowerCase();
@@ -312,7 +290,6 @@ const ReadingPage = () => {
                                             </div>
                                             
                                             <div className="pl-9 space-y-3">
-                                                {/* Options & Inputs */}
                                                 {q.type === 'multiple_choice' && q.options && (
                                                     <div className="space-y-2">
                                                         {q.options.map((opt, i) => (
@@ -362,28 +339,13 @@ const ReadingPage = () => {
                                                     />
                                                 )}
 
-                                                {/* Analysis */}
-                                                {isSubmitted && (
+                                                {isSubmitted && q.evidence && (
                                                     <div className="mt-3 pt-3 border-t border-slate-200/50 text-xs">
                                                         <div className="flex justify-between items-start gap-2">
-                                                            <div>
-                                                                <span className="text-slate-500">Correct: </span>
-                                                                <span className="font-bold text-green-700">{q.correctAnswer}</span>
-                                                            </div>
-                                                            {q.evidence && (
-                                                                <button 
-                                                                    onClick={() => locateEvidence(q.evidence!)}
-                                                                    className="flex items-center gap-1 text-indigo-600 hover:underline font-medium"
-                                                                >
-                                                                    <Eye className="w-3 h-3" /> Show Evidence
-                                                                </button>
-                                                            )}
+                                                            <div><span className="text-slate-500">Correct: </span><span className="font-bold text-green-700">{q.correctAnswer}</span></div>
+                                                            <button onClick={() => locateEvidence(q.evidence!)} className="flex items-center gap-1 text-indigo-600 hover:underline font-medium"><Eye className="w-3 h-3" /> Show Evidence</button>
                                                         </div>
-                                                        {highlightedEvidence === q.evidence && (
-                                                            <div className="mt-2 p-2 bg-green-100 rounded text-green-800 italic border border-green-200">
-                                                                "{q.evidence}"
-                                                            </div>
-                                                        )}
+                                                        {highlightedEvidence === q.evidence && <div className="mt-2 p-2 bg-green-100 rounded text-green-800 italic border border-green-200">"{q.evidence}"</div>}
                                                     </div>
                                                 )}
                                             </div>
@@ -402,12 +364,8 @@ const ReadingPage = () => {
        <div className={`fixed top-[130px] right-0 bottom-0 w-80 bg-white border-l border-slate-200 shadow-xl transform transition-transform duration-300 ease-in-out ${showNotes ? 'translate-x-0' : 'translate-x-full'}`}>
             <div className="h-full flex flex-col">
                 <div className="p-4 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
-                    <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                        <Edit3 className="w-4 h-4" /> Notepad
-                    </h3>
-                    <button onClick={() => setShowNotes(false)} className="text-slate-400 hover:text-slate-600">
-                        <X className="w-5 h-5" />
-                    </button>
+                    <h3 className="font-bold text-slate-700 flex items-center gap-2"><Edit3 className="w-4 h-4" /> Notepad</h3>
+                    <button onClick={() => setShowNotes(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
                 </div>
                 <div className="flex-1 p-4">
                     <textarea 

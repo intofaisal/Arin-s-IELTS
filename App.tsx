@@ -7,12 +7,14 @@ import ReadingPage from './pages/Reading';
 import WritingPage from './pages/Writing';
 import SpeakingPage from './pages/Speaking';
 import HistoryPage from './pages/History';
+import LoginPage from './pages/Login';
 
 function App() {
   return (
     <HashRouter>
       <Layout>
         <Routes>
+          <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<Dashboard />} />
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/reading" element={<ReadingPage />} />

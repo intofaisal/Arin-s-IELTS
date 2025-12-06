@@ -1,8 +1,10 @@
+
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Volume2, User, Play } from 'lucide-react';
+import { Mic, Square, Volume2, User, Play, ChevronDown, RefreshCw, Loader2 } from 'lucide-react';
 import { GeminiService } from '../services/geminiService';
 import { StorageService } from '../services/storage';
-import { TestModule } from '../types';
+import { AuthService } from '../services/auth';
+import { TestModule, PracticeTest, SpeakingModule } from '../types';
 
 interface Message {
   role: 'examiner' | 'candidate';
@@ -10,6 +12,11 @@ interface Message {
 }
 
 const SpeakingPage = () => {
+  const [loading, setLoading] = useState(true);
+  const [allTests, setAllTests] = useState<{bankId: string, bankName: string, test: PracticeTest}[]>([]);
+  const [selectedTestUniqueId, setSelectedTestUniqueId] = useState<string>('');
+  const [currentContext, setCurrentContext] = useState<SpeakingModule | undefined>(undefined);
+
   const [messages, setMessages] = useState<Message[]>([
     { role: 'examiner', text: "Good afternoon. Can you tell me your full name, please?" }
   ]);
@@ -17,11 +24,11 @@ const SpeakingPage = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Speech Recognition Setup (Browser native)
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
+    loadTests();
+    
     if ('webkitSpeechRecognition' in window) {
       const SpeechRecognition = (window as any).webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
@@ -33,19 +40,37 @@ const SpeakingPage = () => {
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           transcript += event.results[i][0].transcript;
         }
-        setUserInput(prev => {
-             // Simple logic to replace previous partial input if needed, or append.
-             // For simplicity, we just set the final transcript
-             return transcript;
-        });
+        setUserInput(transcript);
       };
 
-      recognitionRef.current.onerror = (event: any) => {
-        console.error("Speech recognition error", event.error);
-        setIsRecording(false);
-      };
+      recognitionRef.current.onerror = () => setIsRecording(false);
     }
   }, []);
+
+  const loadTests = async () => {
+      setLoading(true);
+      const tests = await StorageService.getAllTestsByModule(TestModule.SPEAKING);
+      setAllTests(tests);
+      if (tests.length > 0) {
+          // Auto select first
+          handleTestSelection(`${tests[0].bankId}|${tests[0].test.id}`, tests);
+      }
+      setLoading(false);
+  }
+
+  const handleTestSelection = (uniqueId: string, testList = allTests) => {
+      setSelectedTestUniqueId(uniqueId);
+      const [bankId, testId] = uniqueId.split('|');
+      const found = testList.find(t => t.bankId === bankId && t.test.id === testId);
+      setCurrentContext(found?.test.speaking);
+      resetTest();
+  };
+
+  const resetTest = () => {
+      setMessages([{ role: 'examiner', text: "Good afternoon. Can you tell me your full name, please?" }]);
+      setUserInput('');
+      setIsRecording(false);
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -78,31 +103,30 @@ const SpeakingPage = () => {
     setIsProcessing(true);
 
     try {
-      // Format history for Gemini API
       const historyForAI = messages.map(m => ({
         role: m.role === 'examiner' ? 'model' : 'user',
         parts: [{ text: m.text }]
       }));
 
-      const responseText = await GeminiService.getSpeakingResponse(historyForAI, userInput);
+      const responseText = await GeminiService.getSpeakingResponse(historyForAI, userInput, currentContext);
       
       const updatedMessages = [...newMessages, { role: 'examiner', text: responseText } as Message];
       setMessages(updatedMessages);
       
-      // Text-to-Speech for Examiner
       if ('speechSynthesis' in window) {
         const utterance = new SpeechSynthesisUtterance(responseText);
-        utterance.lang = 'en-GB'; // British accent for IELTS
+        utterance.lang = 'en-GB'; 
         window.speechSynthesis.speak(utterance);
       }
 
-      // If conversation gets long, save a "completed" result
-      if (updatedMessages.length > 10) {
-          StorageService.saveResult({
+      const user = AuthService.getCurrentUser();
+      if (updatedMessages.length > 10 && user) {
+          await StorageService.saveResult({
               id: crypto.randomUUID(),
+              userId: user.id,
               date: new Date().toISOString(),
               module: TestModule.SPEAKING,
-              score: 0, // Mock score
+              score: 0,
               details: { length: updatedMessages.length }
           });
       }
@@ -114,28 +138,49 @@ const SpeakingPage = () => {
     }
   };
 
+  if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600"/></div>;
+
   return (
     <div className="max-w-4xl mx-auto h-[calc(100vh-120px)] flex flex-col">
-      <div className="bg-white p-6 rounded-t-xl border-b border-slate-200 flex justify-between items-center shadow-sm z-10">
+      <div className="bg-white p-4 rounded-t-xl border-b border-slate-200 flex flex-col sm:flex-row justify-between items-center shadow-sm z-10 gap-4">
         <div>
           <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
             <Mic className="w-6 h-6 text-orange-600" />
-            Speaking Test Simulation
+            Speaking Simulation
           </h2>
-          <p className="text-sm text-slate-500">Practice Part 1, 2, and 3 with AI Examiner</p>
         </div>
-        <button 
-            onClick={() => setMessages([{ role: 'examiner', text: "Good afternoon. Can you tell me your full name, please?" }])}
-            className="text-sm text-red-500 hover:bg-red-50 px-3 py-1 rounded"
-        >
-            Reset Test
-        </button>
+
+        <div className="flex items-center gap-2">
+            {allTests.length > 0 && (
+                <div className="relative">
+                    <select 
+                        value={selectedTestUniqueId} 
+                        onChange={(e) => handleTestSelection(e.target.value)}
+                        className="appearance-none bg-slate-50 border border-slate-200 text-slate-900 text-sm rounded-lg pl-3 pr-8 py-2 min-w-[200px] font-medium"
+                    >
+                        {allTests.map(t => (
+                            <option key={`${t.bankId}|${t.test.id}`} value={`${t.bankId}|${t.test.id}`}>
+                                {t.test.name}
+                            </option>
+                        ))}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                </div>
+            )}
+            <button 
+                onClick={resetTest}
+                className="text-sm text-slate-500 hover:text-red-500 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
+                title="Reset Test"
+            >
+                <RefreshCw className="w-4 h-4" />
+            </button>
+        </div>
       </div>
 
       <div className="flex-1 bg-slate-100 overflow-y-auto p-6 space-y-6">
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex ${msg.role === 'examiner' ? 'justify-start' : 'justify-end'}`}>
-            <div className={`flex items-end gap-2 max-w-[80%] ${msg.role === 'candidate' ? 'flex-row-reverse' : ''}`}>
+            <div className={`flex items-end gap-2 max-w-[85%] ${msg.role === 'candidate' ? 'flex-row-reverse' : ''}`}>
               <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'examiner' ? 'bg-indigo-600' : 'bg-slate-400'}`}>
                 {msg.role === 'examiner' ? <Volume2 className="w-4 h-4 text-white" /> : <User className="w-4 h-4 text-white" />}
               </div>

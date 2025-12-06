@@ -1,7 +1,21 @@
+
 export enum TestModule {
   READING = 'Reading',
   WRITING = 'Writing',
   SPEAKING = 'Speaking'
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'student';
+  avatar?: string;
+}
+
+export interface DBConfig {
+  url: string;
+  key: string;
 }
 
 export interface QuestionBank {
@@ -16,6 +30,7 @@ export interface PracticeTest {
   name: string; // e.g. "Test 1"
   reading?: ReadingModule;
   writing?: WritingModule;
+  speaking?: SpeakingModule;
 }
 
 export interface ReadingModule {
@@ -43,12 +58,19 @@ export interface WritingModule {
   task2Prompt: string;
 }
 
-// Alias for backwards compatibility if needed, though we should migrate
+export interface SpeakingModule {
+  part1Topics: string[];
+  part2CueCard: string;
+  part3Questions: string[];
+}
+
+// Alias for backwards compatibility if needed
 export type WritingData = WritingModule;
 export type ReadingData = ReadingModule;
 
 export interface TestResult {
   id: string;
+  userId: string; // Added to link result to specific user
   date: string;
   module: TestModule;
   score: number;

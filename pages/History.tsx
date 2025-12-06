@@ -1,14 +1,27 @@
+
 import React, { useEffect, useState } from 'react';
 import { StorageService } from '../services/storage';
+import { AuthService } from '../services/auth';
 import { TestResult, TestModule } from '../types';
 import { BookOpen, PenTool, Mic, Calendar } from 'lucide-react';
 
 const HistoryPage = () => {
   const [results, setResults] = useState<TestResult[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setResults(StorageService.getResults());
+    loadResults();
   }, []);
+
+  const loadResults = async () => {
+      setLoading(true);
+      const user = AuthService.getCurrentUser();
+      if (user) {
+          const res = await StorageService.getResultsForUser(user.id);
+          setResults(res);
+      }
+      setLoading(false);
+  }
 
   const getIcon = (module: TestModule) => {
     switch (module) {
@@ -25,6 +38,8 @@ const HistoryPage = () => {
         case TestModule.SPEAKING: return 'bg-orange-50 border-orange-100';
     }
   }
+
+  if (loading) return <div className="p-10 flex justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>;
 
   return (
     <div className="space-y-6">

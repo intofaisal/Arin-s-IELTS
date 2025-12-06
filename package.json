@@ -15,7 +15,8 @@
     "react-router-dom": "^7.10.1",
     "lucide-react": "^0.556.0",
     "recharts": "^3.5.1",
-    "react-markdown": "^10.1.0"
+    "react-markdown": "^10.1.0",
+    "@supabase/supabase-js": "2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

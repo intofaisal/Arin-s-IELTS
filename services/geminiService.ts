@@ -1,5 +1,6 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { PracticeTest, WritingFeedback } from "../types";
+import { PracticeTest, WritingFeedback, TestModule, SpeakingModule } from "../types";
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -22,45 +23,25 @@ export const fileToGenerativePart = async (file: File): Promise<{ inlineData: { 
 };
 
 export const GeminiService = {
-  // Extract Multiple Practice Tests (Reading & Writing) from PDF
-  extractTestContent: async (file: File): Promise<{ tests: PracticeTest[] }> => {
+  // --- READING EXTRACTION (STRICT) ---
+  extractReadingTests: async (file: File): Promise<PracticeTest[]> => {
     const ai = getAI();
     const model = "gemini-2.5-flash";
     const filePart = await fileToGenerativePart(file);
 
     const prompt = `
-      Analyze this IELTS practice test PDF. It likely contains multiple Practice Tests (e.g., Test 1, Test 2, Test 3, Test 4).
+      Analyze this IELTS PDF. Extract separate READING Practice Tests.
       
-      Your goal is to extract EACH Practice Test separately.
+      STRICT RULES FOR VALIDITY:
+      1. Each Reading Test MUST have exactly 3 Passages.
+      2. Each Reading Test MUST have exactly 40 Questions total across the 3 passages.
+      3. If a test has missing passages or fewer than 40 questions, DO NOT include it.
       
-      For EACH Test found in the PDF:
-      
-      1. **Identify the Test Name** (e.g., "Test 1", "Practice Test 2").
-      
-      2. **Extract the Reading Module**:
-         - A standard IELTS Reading module has EXACTLY 3 Sections (Passages).
-         - Extract all 3 passages.
-         - For each passage:
-            - Title
-            - Content (Format as HTML: use <p>, <h3>, <ul>. Do NOT use Markdown).
-            - Questions (Extract all questions for this passage).
-            - For each question:
-                - ID (number)
-                - Text
-                - Type (multiple_choice, true_false_not_given, fill_gap, matching_headings)
-                - Options (if any)
-                - Correct Answer (Infer it or find in answer key)
-                - Evidence (Short quote)
-                - Group Instruction (e.g. "Questions 1-5")
-      
-      3. **Extract the Writing Module**:
-         - Task 1 Prompt
-         - Task 2 Prompt
-      
-      If the PDF is huge, try to extract at least the first 2 full tests found.
+      Output Schema:
+      List of tests found.
+      For each passage, format content as clean HTML (paragraphs, lists).
     `;
 
-    // Define strict schema for output
     const responseSchema = {
       type: Type.OBJECT,
       properties: {
@@ -72,7 +53,6 @@ export const GeminiService = {
               name: { type: Type.STRING },
               reading: {
                 type: Type.OBJECT,
-                nullable: true,
                 properties: {
                   passages: {
                     type: Type.ARRAY,
@@ -80,7 +60,7 @@ export const GeminiService = {
                       type: Type.OBJECT,
                       properties: {
                         title: { type: Type.STRING },
-                        content: { type: Type.STRING, description: "Full passage text in HTML format (<p>, <ul>, etc.)" },
+                        content: { type: Type.STRING },
                         questions: {
                           type: Type.ARRAY,
                           items: {
@@ -91,7 +71,7 @@ export const GeminiService = {
                               type: { type: Type.STRING, enum: ["multiple_choice", "true_false_not_given", "fill_gap", "matching_headings"] },
                               options: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
                               correctAnswer: { type: Type.STRING },
-                              evidence: { type: Type.STRING, description: "Exact quote from text proving the answer" },
+                              evidence: { type: Type.STRING },
                               groupInstruction: { type: Type.STRING, nullable: true }
                             }
                           }
@@ -99,14 +79,6 @@ export const GeminiService = {
                       }
                     }
                   }
-                }
-              },
-              writing: {
-                type: Type.OBJECT,
-                nullable: true,
-                properties: {
-                  task1Prompt: { type: Type.STRING },
-                  task2Prompt: { type: Type.STRING }
                 }
               }
             }
@@ -118,37 +90,139 @@ export const GeminiService = {
     try {
       const result = await ai.models.generateContent({
         model,
-        contents: {
-          parts: [filePart, { text: prompt }]
-        },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: responseSchema,
-          thinkingConfig: { thinkingBudget: 0 } // Disable thinking for faster extraction
-        }
+        contents: { parts: [filePart, { text: prompt }] },
+        config: { responseMimeType: "application/json", responseSchema, thinkingConfig: { thinkingBudget: 0 } }
       });
 
-      if (!result.text) throw new Error("No data returned from AI");
+      if (!result.text) throw new Error("No data returned");
       const parsed = JSON.parse(result.text);
       
-      // Assign IDs if missing
-      parsed.tests.forEach((t: any) => {
-        if (!t.id) t.id = crypto.randomUUID();
-      });
+      // Strict Validation
+      const validTests: PracticeTest[] = [];
+      
+      if (parsed.tests) {
+          for (const t of parsed.tests) {
+              if (t.reading && t.reading.passages && t.reading.passages.length === 3) {
+                  const totalQuestions = t.reading.passages.reduce((acc: number, p: any) => acc + (p.questions?.length || 0), 0);
+                  if (totalQuestions === 40) {
+                      t.id = crypto.randomUUID();
+                      validTests.push(t);
+                  }
+              }
+          }
+      }
+      
+      if (validTests.length === 0) throw new Error("No valid IELTS Reading Tests (3 Passages, 40 Questions) found in this file.");
+      return validTests;
 
-      return parsed;
     } catch (error) {
-      console.error("Error extracting PDF content:", error);
+      console.error("Reading Extraction Error:", error);
       throw error;
     }
   },
 
-  // Grade Writing Task 2
-  gradeWriting: async (essay: string, prompt: string): Promise<WritingFeedback> => {
+  // --- WRITING EXTRACTION ---
+  extractWritingTests: async (file: File): Promise<PracticeTest[]> => {
+    const ai = getAI();
+    const model = "gemini-2.5-flash";
+    const filePart = await fileToGenerativePart(file);
+
+    const prompt = `
+      Analyze this IELTS PDF. Extract separate WRITING Practice Tests.
+      Each test must contain BOTH Task 1 and Task 2 prompts.
+    `;
+
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        tests: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              writing: {
+                type: Type.OBJECT,
+                properties: {
+                  task1Prompt: { type: Type.STRING },
+                  task2Prompt: { type: Type.STRING }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const result = await ai.models.generateContent({
+        model,
+        contents: { parts: [filePart, { text: prompt }] },
+        config: { responseMimeType: "application/json", responseSchema, thinkingConfig: { thinkingBudget: 0 } }
+    });
+    
+    const parsed = JSON.parse(result.text || "{}");
+    if (!parsed.tests || parsed.tests.length === 0) throw new Error("No Writing tests found.");
+
+    parsed.tests.forEach((t: any) => t.id = crypto.randomUUID());
+    return parsed.tests;
+  },
+
+  // --- SPEAKING EXTRACTION ---
+  extractSpeakingTests: async (file: File): Promise<PracticeTest[]> => {
+    const ai = getAI();
+    const model = "gemini-2.5-flash";
+    const filePart = await fileToGenerativePart(file);
+
+    const prompt = `
+      Analyze this IELTS PDF. Extract separate SPEAKING Practice Tests.
+      For each test, extract:
+      - Part 1 Topics/Questions
+      - Part 2 Cue Card Topic
+      - Part 3 Discussion Questions
+    `;
+
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        tests: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              speaking: {
+                type: Type.OBJECT,
+                properties: {
+                  part1Topics: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  part2CueCard: { type: Type.STRING },
+                  part3Questions: { type: Type.ARRAY, items: { type: Type.STRING } }
+                }
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const result = await ai.models.generateContent({
+        model,
+        contents: { parts: [filePart, { text: prompt }] },
+        config: { responseMimeType: "application/json", responseSchema, thinkingConfig: { thinkingBudget: 0 } }
+    });
+
+    const parsed = JSON.parse(result.text || "{}");
+    if (!parsed.tests || parsed.tests.length === 0) throw new Error("No Speaking tests found.");
+
+    parsed.tests.forEach((t: any) => t.id = crypto.randomUUID());
+    return parsed.tests;
+  },
+
+  // Grade Writing (Task 1 or 2)
+  gradeWriting: async (essay: string, prompt: string, taskType: 'Task 1' | 'Task 2'): Promise<WritingFeedback> => {
     const ai = getAI();
     const model = "gemini-2.5-flash";
 
-    const systemInstruction = `You are a strict IELTS Writing Examiner. Grade the following Task 2 essay based on the official 4 criteria: Task Response, Coherence & Cohesion, Lexical Resource, Grammatical Range & Accuracy.`;
+    const systemInstruction = `You are a strict IELTS Writing Examiner. Grade the following ${taskType} essay based on official criteria.`;
 
     const responseSchema = {
       type: Type.OBJECT,
@@ -163,7 +237,7 @@ export const GeminiService = {
             grammaticalRange: { type: Type.NUMBER }
           }
         },
-        feedback: { type: Type.STRING, description: "Detailed feedback explaining the score." },
+        feedback: { type: Type.STRING },
         improvementTips: { type: Type.ARRAY, items: { type: Type.STRING } }
       }
     };
@@ -176,7 +250,7 @@ export const GeminiService = {
       config: {
         systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: responseSchema,
+        responseSchema,
         temperature: 0.3
       }
     });
@@ -184,14 +258,20 @@ export const GeminiService = {
     return JSON.parse(result.text || "{}");
   },
 
-  // Generate Speaking Response (Chat)
-  getSpeakingResponse: async (history: { role: string, parts: [{ text: string }] }[], lastUserMessage: string): Promise<string> => {
+  // Generate Speaking Response with Context
+  getSpeakingResponse: async (history: { role: string, parts: [{ text: string }] }[], lastUserMessage: string, context?: SpeakingModule): Promise<string> => {
     const ai = getAI();
-    // Using gemini-2.5-flash for speed in chat
+    
+    let systemInstruction = "You are an IELTS Speaking Examiner. Conduct a mock test. Start with Part 1 (Introduction), move to Part 2 (Cue Card), then Part 3 (Discussion). Be professional, polite, but strictly adhere to the role. Do not break character. Keep responses brief like a real examiner.";
+    
+    if (context) {
+        systemInstruction += `\n\nUSE THIS SPECIFIC TEST MATERIAL:\nPart 1 Topics: ${context.part1Topics.join(', ')}\nPart 2 Cue Card: ${context.part2CueCard}\nPart 3 Questions: ${context.part3Questions.join(', ')}`;
+    }
+
     const chat = ai.chats.create({
       model: "gemini-2.5-flash",
       config: {
-        systemInstruction: "You are an IELTS Speaking Examiner. Conduct a mock test. Start with Part 1 (Introduction), move to Part 2 (Cue Card), then Part 3 (Discussion). Be professional, polite, but strictly adhere to the role. Do not break character. Keep responses brief like a real examiner.",
+        systemInstruction,
         temperature: 0.7
       },
       history: history
